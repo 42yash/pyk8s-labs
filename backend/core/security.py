@@ -1,4 +1,5 @@
 # backend/core/security.py
+
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -9,13 +10,11 @@ from passlib.context import CryptContext
 from sqlalchemy.orm import Session
 
 import crud
+import models
 from core.config import settings
 from db import get_db
-from models.user import User as UserModel
 from schemas.user import TokenData
 
-# This tells FastAPI where to look for the token.
-# The tokenUrl points to our own login endpoint.
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/token")
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -39,7 +38,7 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
 
 def get_current_user(
     token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)
-) -> UserModel:
+) -> models.User:
     """
     Dependency to get the current user from a JWT token.
     Decodes the token, validates the signature, and fetches the user from the DB.

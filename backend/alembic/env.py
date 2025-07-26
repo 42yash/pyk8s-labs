@@ -1,4 +1,5 @@
-# alembic/env.py
+# backend/alembic/env.py
+
 from logging.config import fileConfig
 
 from sqlalchemy import engine_from_config
@@ -17,10 +18,7 @@ if config.config_file_name is not None:
 
 # --- CORRECTED SECTION ---
 # Import the Base from your models package, this is the single source of truth.
-from models.base import Base
-
-# Import all of your models here so that `Base` knows about them.
-from models.user import User
+from models import Base, User, Cluster
 
 # Point Alembic's 'target_metadata' at your Base's metadata.
 target_metadata = Base.metadata
