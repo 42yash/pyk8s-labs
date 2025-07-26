@@ -7,21 +7,20 @@ WORKDIR /app
 # Create a non-root user for security
 RUN addgroup --system app && adduser --system --group app
 
-# Copy the file that lists the dependencies
+# Copy dependency file first to leverage Docker cache
 COPY requirements.txt .
 
 # Install the dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy the rest of the application code
-COPY ./app /app
+# Copy the entire backend directory content into the container
+COPY . .
 
-# Change ownership of the files to the app user
+# Change ownership of all files to the app user
 RUN chown -R app:app /app
 
 # Switch to the non-root user
 USER app
 
-# Command to run the application
-# Uvicorn will be found because it was installed from requirements.txt
+# Command to run the application from the flat directory structure
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
