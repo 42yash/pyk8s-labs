@@ -1,9 +1,12 @@
+# backend/main.py
 from fastapi import FastAPI
-from core.config import settings # Import the settings object
+from core.config import settings
+from api import router as api_router # Import the router
 
-app = FastAPI(title=settings.PROJECT_NAME) # Use project name in title
+app = FastAPI(title=settings.PROJECT_NAME)
 
-@app.get("/api/v1")
+app.include_router(api_router, prefix="/api/v1") # Include the router
+
+@app.get("/")
 def read_root():
-    # Use a setting in the response body
-    return {"message": f"Hello from {settings.PROJECT_NAME} Backend"}
+    return {"message": f"Welcome to {settings.PROJECT_NAME}"}
