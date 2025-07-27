@@ -1,6 +1,6 @@
 "use client";
-import { useState } from "react";
 import Link from "next/link";
+import { useState } from "react";
 
 export default function Home() {
 	const [showLoginModal, setShowLoginModal] = useState(false);
@@ -67,10 +67,7 @@ export default function Home() {
 					</div>
 
 					<h1 className="text-5xl md:text-6xl font-bold text-gray-900 dark:text-white mb-6 leading-tight">
-						Ephemeral K8s Clusters
-						<span className="block text-transparent bg-clip-text bg-gradient-to-r from-blue-600 to-purple-600">
-							On-Demand
-						</span>
+						DOES THIS UPDATE?
 					</h1>
 
 					<p className="text-xl text-gray-600 dark:text-gray-300 mb-12 max-w-3xl mx-auto leading-relaxed">

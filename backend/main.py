@@ -1,5 +1,6 @@
 # backend/main.py
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware # Import the middleware
 from contextlib import asynccontextmanager
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
@@ -7,6 +8,13 @@ from core.config import settings
 from api import router as api_router, run_cluster_deletion
 import crud
 from db import SessionLocal
+
+# --- Add this origins list ---
+origins = [
+    "http://localhost:3000",
+    # You can add other origins here, like your production frontend URL
+]
+# -----------------------------
 
 def check_expired_clusters():
     """Scheduled job to find and delete expired clusters."""
@@ -42,6 +50,16 @@ async def lifespan(app: FastAPI):
     print("Scheduler shut down.")
 
 app = FastAPI(title=settings.PROJECT_NAME, lifespan=lifespan)
+
+# --- Add the CORS middleware to the app ---
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"], # Allow all methods
+    allow_headers=["*"], # Allow all headers
+)
+# ----------------------------------------
 
 app.include_router(api_router, prefix="/api/v1")
 
