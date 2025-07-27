@@ -82,6 +82,8 @@ export const apiSlice = createApi({
                         });
                     };
 
+                    // --- CORRECTED SECTION ---
+                    // The two onclose handlers have been merged into one.
                     ws.onclose = (event) => {
                         console.log('WebSocket closed:', {
                             code: event.code,
@@ -90,20 +92,15 @@ export const apiSlice = createApi({
                             timestamp: new Date().toISOString()
                         });
 
-                        // Add reconnection logic here if needed
-                    };
-
-
-                    ws.onclose = (event) => {
-                        console.log("WebSocket disconnected", event);
-
-                        // Attempt to reconnect if not a normal closure
+                        // Attempt to reconnect if not a normal closure (code 1000)
                         if (event.code !== 1000 && reconnectAttempts < maxReconnectAttempts) {
                             reconnectAttempts++;
                             console.log(`Attempting to reconnect WebSocket (${reconnectAttempts}/${maxReconnectAttempts})`);
+                            // Exponential backoff for reconnection attempts
                             setTimeout(connectWebSocket, 2000 * reconnectAttempts);
                         }
                     };
+                    // --- END CORRECTED SECTION ---
                 };
 
                 try {

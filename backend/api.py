@@ -1,5 +1,5 @@
-# backend/api.py
 import json
+import asyncio
 from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks, WebSocket, WebSocketDisconnect, Response
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
@@ -50,13 +50,18 @@ def read_users_me(current_user: schemas.user.User = Depends(get_current_user)):
 async def run_cluster_provisioning(cluster_id: str, cluster_name: str, user_id: str):
     db = SessionLocal()
     try:
-        success = provisioner.create_kind_cluster(cluster_name)
+        # --- FIX: Run the blocking call in a separate thread ---
+        success = await asyncio.to_thread(provisioner.create_kind_cluster, cluster_name)
+        
         db_cluster = db.query(models.cluster.Cluster).filter(models.cluster.Cluster.id == cluster_id).first()
         if not db_cluster: return 
         new_status = ""
         if success:
-            kubeconfig = provisioner.get_kind_kubeconfig(cluster_name)
+            # --- FIX: Run the blocking call in a separate thread ---
+            kubeconfig = await asyncio.to_thread(provisioner.get_kind_kubeconfig, cluster_name)
+            
             if kubeconfig:
+                # Encryption is fast, so it doesn't need its own thread
                 db_cluster.encrypted_kubeconfig = provisioner.encrypt_data(kubeconfig)
                 new_status = "RUNNING"
             else:
@@ -72,7 +77,9 @@ async def run_cluster_provisioning(cluster_id: str, cluster_name: str, user_id: 
 async def run_cluster_deletion(cluster_name: str, cluster_id: str, user_id: str):
     db = SessionLocal()
     try:
-        provisioner.delete_kind_cluster(cluster_name)
+        # --- FIX: Run the blocking call in a separate thread ---
+        await asyncio.to_thread(provisioner.delete_kind_cluster, cluster_name)
+        
         await publish_status_update(user_id=user_id, cluster_id=cluster_id, status="DELETED")
         crud.remove_cluster(db=db, cluster_id=cluster_id)
         print(f"Cluster {cluster_name} and its database record have been deleted.")
@@ -93,7 +100,6 @@ async def create_cluster(cluster: schemas.cluster.ClusterCreate, background_task
 def list_clusters(db: Session = Depends(get_db), current_user: models.user.User = Depends(get_current_user)):
     return crud.get_clusters_by_user(db=db, user_id=current_user.id)
 
-# --- START: NEW KUBECONFIG ENDPOINT ---
 @router.get("/clusters/{cluster_id}/kubeconfig", response_class=Response)
 def get_cluster_kubeconfig(
     cluster_id: str,
@@ -118,7 +124,6 @@ def get_cluster_kubeconfig(
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to decrypt kubeconfig.")
 
     return Response(content=decrypted_kubeconfig, media_type="text/plain")
-# --- END: NEW KUBECONFIG ENDPOINT ---
 
 @router.delete("/clusters/{cluster_id}", status_code=status.HTTP_202_ACCEPTED)
 async def delete_cluster(cluster_id: str, background_tasks: BackgroundTasks, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
