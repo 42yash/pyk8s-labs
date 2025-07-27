@@ -6,10 +6,11 @@ from contextlib import asynccontextmanager
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from core.config import settings
-from api import router as api_router, run_cluster_deletion # Import the async task
+from api import router as api_router, run_cluster_deletion
 import crud
 from db import SessionLocal
 from websocket_manager import manager, redis_listener
+from terminal import terminal_router # Import the new terminal router
 import logging
 
 origins = [
@@ -33,7 +34,6 @@ async def check_expired_clusters():
             cluster.status = "DELETING"
             db.commit()
             
-            # Call the async task directly, without passing the db session
             asyncio.create_task(
                 run_cluster_deletion(cluster.name, str(cluster.id), str(cluster.user_id))
             )
@@ -74,6 +74,7 @@ app.add_middleware(
 )
 
 app.include_router(api_router, prefix="/api/v1")
+app.include_router(terminal_router, prefix="/api/v1") # Mount the terminal router
 
 @app.middleware("http")
 async def log_requests(request, call_next):
