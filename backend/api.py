@@ -5,8 +5,9 @@ from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 import crud
 import schemas
-from db import get_db, SessionLocal 
-from core.security import create_access_token, verify_password, get_current_user
+from schemas.team import TeamCreate, Team, TeamDetails, TeamMemberInvite, TeamMember
+from db import get_db, SessionLocal
+from core.security import create_access_token, verify_password, get_current_user, require_team_role
 import provisioner
 import models
 from redis_client import get_redis_connection
@@ -14,16 +15,12 @@ from websocket_manager import manager, get_current_user_from_token, REDIS_CHANNE
 
 
 router = APIRouter()
+teams_router = APIRouter()
 
-async def publish_status_update(user_id: str, cluster_id: str, status: str):
-    """Publishes a cluster status update to the Redis Pub/Sub channel."""
-    redis_conn = get_redis_connection()
-    message = json.dumps({
-        "user_id": str(user_id),
-        "cluster_id": str(cluster_id),
-        "status": status
-    })
-    await redis_conn.publish(REDIS_CHANNEL, message)
+# --- RBAC Dependency Instances ---
+require_admin = require_team_role(allowed_roles=["admin"])
+require_member = require_team_role(allowed_roles=["admin", "member"])
+
 
 # --- USER/AUTH ENDPOINTS ---
 @router.post("/users/register", response_model=schemas.user.User)
@@ -47,27 +44,26 @@ def read_users_me(current_user: schemas.user.User = Depends(get_current_user)):
     return current_user
 
 # --- BACKGROUND TASKS ---
-async def run_cluster_provisioning(cluster_id: str, cluster_name: str, user_id: str):
+async def run_cluster_provisioning(cluster_id: str, cluster_name: str, user_id: str, provider: str):
     db = SessionLocal()
     try:
-        # --- FIX: Run the blocking call in a separate thread ---
-        success = await asyncio.to_thread(provisioner.create_kind_cluster, cluster_name)
+        success = await asyncio.to_thread(provisioner.create_cluster, cluster_name, provider)
         
         db_cluster = db.query(models.cluster.Cluster).filter(models.cluster.Cluster.id == cluster_id).first()
         if not db_cluster: return 
+        
         new_status = ""
         if success:
-            # --- FIX: Run the blocking call in a separate thread ---
-            kubeconfig = await asyncio.to_thread(provisioner.get_kind_kubeconfig, cluster_name)
+            kubeconfig = await asyncio.to_thread(provisioner.get_kubeconfig, cluster_name, provider)
             
             if kubeconfig:
-                # Encryption is fast, so it doesn't need its own thread
                 db_cluster.encrypted_kubeconfig = provisioner.encrypt_data(kubeconfig)
                 new_status = "RUNNING"
             else:
                 new_status = "ERROR"
         else:
             new_status = "ERROR"
+            
         db_cluster.status = new_status
         db.commit()
         await publish_status_update(user_id=user_id, cluster_id=str(cluster_id), status=new_status)
@@ -77,8 +73,13 @@ async def run_cluster_provisioning(cluster_id: str, cluster_name: str, user_id: 
 async def run_cluster_deletion(cluster_name: str, cluster_id: str, user_id: str):
     db = SessionLocal()
     try:
-        # --- FIX: Run the blocking call in a separate thread ---
-        await asyncio.to_thread(provisioner.delete_kind_cluster, cluster_name)
+        # Fetch the cluster from DB to get its provider
+        db_cluster = crud.get_cluster(db, cluster_id)
+        if not db_cluster:
+            print(f"Cluster with ID {cluster_id} not found for deletion task.")
+            return
+
+        await asyncio.to_thread(provisioner.delete_cluster, cluster_name, db_cluster.provider)
         
         await publish_status_update(user_id=user_id, cluster_id=cluster_id, status="DELETED")
         crud.remove_cluster(db=db, cluster_id=cluster_id)
@@ -91,9 +92,13 @@ async def run_cluster_deletion(cluster_name: str, cluster_id: str, user_id: str)
 async def create_cluster(cluster: schemas.cluster.ClusterCreate, background_tasks: BackgroundTasks, db: Session = Depends(get_db), current_user: models.user.User = Depends(get_current_user)):
     if crud.get_cluster_by_name(db, user_id=current_user.id, name=cluster.name):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="A cluster with this name already exists.")
+        
     db_cluster = crud.create_user_cluster(db=db, cluster=cluster, user_id=current_user.id)
+    
     await publish_status_update(user_id=str(current_user.id), cluster_id=str(db_cluster.id), status="PROVISIONING")
-    background_tasks.add_task(run_cluster_provisioning, db_cluster.id, db_cluster.name, str(current_user.id))
+    
+    background_tasks.add_task(run_cluster_provisioning, db_cluster.id, db_cluster.name, str(current_user.id), db_cluster.provider)
+    
     return db_cluster
 
 @router.get("/clusters", response_model=list[schemas.cluster.Cluster])
@@ -106,7 +111,6 @@ def get_cluster_kubeconfig(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user),
 ):
-    """Retrieves the decrypted kubeconfig for a specific cluster."""
     db_cluster = crud.get_cluster(db, cluster_id=cluster_id)
     
     if not db_cluster or db_cluster.user_id != current_user.id:
@@ -136,6 +140,68 @@ async def delete_cluster(cluster_id: str, background_tasks: BackgroundTasks, db:
     background_tasks.add_task(run_cluster_deletion, db_cluster.name, db_cluster.id, str(current_user.id))
     return {"message": "Cluster deletion scheduled."}
 
+# --- TEAM API ENDPOINTS ---
+
+@teams_router.post("", response_model=Team, status_code=status.HTTP_201_CREATED)
+def create_new_team(
+    team: TeamCreate,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    if crud.get_team_by_name(db, name=team.name):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="A team with this name already exists.")
+    
+    db_team = crud.create_team(db=db, team=team, owner=current_user)
+    return db_team
+
+@teams_router.get("", response_model=list[Team])
+def list_user_teams(
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    return crud.get_teams_for_user(db=db, user_id=current_user.id)
+
+@teams_router.get("/{team_id}", response_model=TeamDetails, dependencies=[Depends(require_member)])
+def get_team_details(
+    team_id: str,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    db_team = crud.get_team(db, team_id=team_id)
+    
+    members_with_roles = crud.get_team_members_with_roles(db, team_id=team_id)
+    
+    team_details = TeamDetails(
+        id=db_team.id,
+        name=db_team.name,
+        members=[
+            TeamMember(id=user.id, email=user.email, role=role)
+            for user, role in members_with_roles
+        ]
+    )
+    return team_details
+
+@teams_router.post("/{team_id}/members", response_model=TeamDetails, dependencies=[Depends(require_admin)])
+def invite_member_to_team(
+    team_id: str,
+    invite: TeamMemberInvite,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    db_team = crud.get_team(db, team_id=team_id)
+
+    user_to_add = crud.get_user_by_email(db, email=invite.email)
+    if not user_to_add:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"User with email {invite.email} not found.")
+
+    if user_to_add in db_team.members:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="User is already a member of this team.")
+        
+    crud.add_user_to_team(db=db, team=db_team, user=user_to_add, role=invite.role)
+    
+    return get_team_details(team_id=team_id, db=db, current_user=current_user)
+
+
 # --- WEBSOCKET ENDPOINT ---
 @router.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket, db: Session = Depends(get_db)):
@@ -156,3 +222,7 @@ async def websocket_endpoint(websocket: WebSocket, db: Session = Depends(get_db)
     except WebSocketDisconnect:
         manager.disconnect(user_id)
         print(f"WebSocket disconnected for user: {user.email} (ID: {user_id})")
+
+
+# Include the new team router in the main API router
+router.include_router(teams_router, prefix="/teams", tags=["teams"])

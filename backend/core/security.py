@@ -1,7 +1,7 @@
 # backend/core/security.py
 
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import Optional, List
 
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
@@ -61,3 +61,47 @@ def get_current_user(
     if user is None:
         raise credentials_exception
     return user
+
+# --- NEW RBAC DEPENDENCY ---
+
+def require_team_role(allowed_roles: List[str]):
+    """
+    Dependency factory to check if a user has a specific role within a team.
+    """
+    def _check_role(
+        team_id: str,
+        current_user: models.User = Depends(get_current_user),
+        db: Session = Depends(get_db),
+    ):
+        """
+        The actual dependency that will be injected into the endpoint.
+        """
+        user_role_tuple = (
+            db.query(models.team_memberships.c.role)
+            .filter(
+                models.team_memberships.c.user_id == current_user.id,
+                models.team_memberships.c.team_id == team_id,
+            )
+            .first()
+        )
+
+        # If user is not a member, they won't have a role
+        if not user_role_tuple:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Team not found or you are not a member.",
+            )
+        
+        user_role = user_role_tuple[0]
+
+        # Check if their role is one of the allowed roles
+        if user_role not in allowed_roles:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You do not have permission to perform this action.",
+            )
+        
+        return user_role # Return the role for potential use in the endpoint
+
+    return _check_role
+# --- END NEW RBAC DEPENDENCY ---

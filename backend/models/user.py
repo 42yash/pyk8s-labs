@@ -3,6 +3,7 @@ from sqlalchemy import Column, String, UUID
 from sqlalchemy.orm import relationship # Import relationship
 import uuid
 from .base import Base
+from .team import team_memberships # Import the association table
 
 class User(Base):
     __tablename__ = "users"
@@ -13,3 +14,10 @@ class User(Base):
 
     # This defines the one-to-many relationship from the User side
     clusters = relationship("Cluster", back_populates="owner")
+    
+    # Relationship to the Team model through the association table
+    teams = relationship(
+        "Team",
+        secondary=team_memberships,
+        back_populates="members"
+    )

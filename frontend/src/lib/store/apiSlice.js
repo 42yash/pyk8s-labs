@@ -13,8 +13,9 @@ export const apiSlice = createApi({
             return headers;
         },
     }),
-    tagTypes: ["Cluster"],
+    tagTypes: ["Cluster", "Team"], // Add "Team" tag type
     endpoints: (builder) => ({
+        // --- AUTH ENDPOINTS ---
         register: builder.mutation({
             query: (credentials) => ({
                 url: "/users/register",
@@ -37,6 +38,7 @@ export const apiSlice = createApi({
                 };
             },
         }),
+        // --- CLUSTER ENDPOINTS ---
         getClusters: builder.query({
             query: () => "/clusters",
             providesTags: ["Cluster"],
@@ -82,8 +84,6 @@ export const apiSlice = createApi({
                         });
                     };
 
-                    // --- CORRECTED SECTION ---
-                    // The two onclose handlers have been merged into one.
                     ws.onclose = (event) => {
                         console.log('WebSocket closed:', {
                             code: event.code,
@@ -92,15 +92,12 @@ export const apiSlice = createApi({
                             timestamp: new Date().toISOString()
                         });
 
-                        // Attempt to reconnect if not a normal closure (code 1000)
                         if (event.code !== 1000 && reconnectAttempts < maxReconnectAttempts) {
                             reconnectAttempts++;
                             console.log(`Attempting to reconnect WebSocket (${reconnectAttempts}/${maxReconnectAttempts})`);
-                            // Exponential backoff for reconnection attempts
                             setTimeout(connectWebSocket, 2000 * reconnectAttempts);
                         }
                     };
-                    // --- END CORRECTED SECTION ---
                 };
 
                 try {
@@ -123,8 +120,6 @@ export const apiSlice = createApi({
                 method: "POST",
                 body: clusterConfig,
             }),
-            // By invalidating the general 'Cluster' tag, we tell RTK Query to refetch the list.
-            // This is simpler and more reliable than optimistic updates for this case.
             invalidatesTags: ["Cluster"],
         }),
         deleteCluster: builder.mutation({
@@ -132,8 +127,36 @@ export const apiSlice = createApi({
                 url: `/clusters/${clusterId}`,
                 method: "DELETE",
             }),
-            // We keep this invalidation as a fallback, but the WebSocket should handle the primary update.
             invalidatesTags: ["Cluster"],
+        }),
+
+        // --- TEAM ENDPOINTS ---
+        getTeams: builder.query({
+            query: () => '/teams',
+            providesTags: (result) =>
+                result
+                    ? [...result.map(({ id }) => ({ type: 'Team', id })), { type: 'Team', id: 'LIST' }]
+                    : [{ type: 'Team', id: 'LIST' }],
+        }),
+        createTeam: builder.mutation({
+            query: (newTeam) => ({
+                url: '/teams',
+                method: 'POST',
+                body: newTeam,
+            }),
+            invalidatesTags: [{ type: 'Team', id: 'LIST' }],
+        }),
+        getTeamDetails: builder.query({
+            query: (teamId) => `/teams/${teamId}`,
+            providesTags: (result, error, id) => [{ type: 'Team', id }],
+        }),
+        inviteMember: builder.mutation({
+            query: ({ teamId, inviteData }) => ({
+                url: `/teams/${teamId}/members`,
+                method: 'POST',
+                body: inviteData,
+            }),
+            invalidatesTags: (result, error, { teamId }) => [{ type: 'Team', id: teamId }],
         }),
     }),
 });
@@ -144,4 +167,9 @@ export const {
     useGetClustersQuery,
     useCreateClusterMutation,
     useDeleteClusterMutation,
+    // Export new hooks
+    useGetTeamsQuery,
+    useCreateTeamMutation,
+    useGetTeamDetailsQuery,
+    useInviteMemberMutation,
 } = apiSlice;
