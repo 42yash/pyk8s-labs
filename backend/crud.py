@@ -1,13 +1,13 @@
 # backend/crud.py
 
 from sqlalchemy.orm import Session, joinedload
-from sqlalchemy import or_
+from sqlalchemy import or_, select
 from datetime import datetime, timedelta, timezone
 
 import models
 from schemas.user import UserCreate
 from schemas.cluster import ClusterCreate
-from schemas.team import TeamCreate  # Import TeamCreate directly
+from schemas.team import TeamCreate
 from core.security import get_password_hash
 
 
@@ -39,7 +39,6 @@ def create_user(db: Session, user: UserCreate):
 
 def get_cluster_by_name(db: Session, user_id: str, name: str):
     """Fetches a cluster by name for a specific user."""
-    # This might need adjustment for team-based lookups, but is fine for now.
     return (
         db.query(models.Cluster)
         .filter(models.Cluster.name == name, models.Cluster.user_id == user_id)
@@ -52,20 +51,17 @@ def get_clusters_by_user(db: Session, user_id: str):
     Fetches all clusters for a specific user.
     This includes clusters they own directly AND clusters owned by teams they are a member of.
     """
-    # Get the list of team IDs the user is a member of
-    user_team_ids = (
-        db.query(models.team_memberships.c.team_id)
-        .filter(models.team_memberships.c.user_id == user_id)
-        .subquery()
+    user_team_ids_subquery = (
+        select(models.team_memberships.c.team_id)
+        .where(models.team_memberships.c.user_id == user_id)
+        .scalar_subquery()
     )
-
-    # Query for clusters that are either owned by the user OR owned by a team they are in.
     return (
         db.query(models.Cluster)
         .filter(
             or_(
                 models.Cluster.user_id == user_id,
-                models.Cluster.team_id.in_(user_team_ids),
+                models.Cluster.team_id.in_(user_team_ids_subquery),
             )
         )
         .all()
@@ -136,7 +132,6 @@ def get_team(db: Session, team_id: str):
 
 def create_team(db: Session, team: TeamCreate, owner: models.User):
     """Creates a new team and assigns the owner as the first admin."""
-    # The type hint 'team: TeamCreate' now works because we imported it directly.
     db_team = models.Team(name=team.name)
     db_team.members.append(owner)
     db.add(db_team)
