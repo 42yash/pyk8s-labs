@@ -17,7 +17,7 @@ export default function Login() {
     const dispatch = useDispatch();
 
     const [login, { isLoading }] = useLoginMutation();
-    
+
     useEffect(() => {
         // Check for a query param to show a message after successful registration
         if (searchParams.get("registered")) {
@@ -37,9 +37,10 @@ export default function Login() {
 
         try {
             const userData = await login(formData).unwrap();
-            // Dispatch the action to save token and user info
-            dispatch(setCredentials({ ...userData, user: { email: formData.email } }));
-            // Redirect to the dashboard
+            // --- THIS LINE HAS BEEN CORRECTED ---
+            // The backend now returns the full user object, so we can pass it directly.
+            dispatch(setCredentials(userData));
+            // --- END OF CHANGE ---
             router.push("/dashboard");
         } catch (err) {
             setError(err.data?.detail || "Failed to log in. Please check your credentials.");
@@ -51,11 +52,13 @@ export default function Login() {
     return (
         <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 dark:from-gray-900 dark:to-gray-800 flex items-center justify-center py-12 px-4 sm:px-6 lg:px-8">
             <div className="max-w-md w-full space-y-8">
-                {/* ... (Header JSX is unchanged) ... */}
+                <div>
+                    <h2 className="mt-6 text-center text-3xl font-extrabold text-gray-900 dark:text-white">Sign in to your account</h2>
+                </div>
                 <form className="mt-8 space-y-6" onSubmit={handleSubmit}>
                     {error && <div className="p-3 bg-red-100 text-red-700 border border-red-300 rounded-lg">{error}</div>}
                     {successMessage && <div className="p-3 bg-green-100 text-green-700 border border-green-300 rounded-lg">{successMessage}</div>}
-                    
+
                     <div className="space-y-4">
                         <div>
                             <label
@@ -87,15 +90,13 @@ export default function Login() {
                         </div>
                     </div>
 
-                    {/* ... (Remember me / Forgot password JSX is unchanged) ... */}
-
                     <div>
                         <button
                             type="submit"
                             disabled={isLoading}
                             className="group relative w-full flex justify-center py-3 px-4 border border-transparent text-sm font-medium rounded-lg text-white bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-700 hover:to-purple-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 transition-all duration-200 shadow-lg hover:shadow-xl disabled:opacity-50"
                         >
-                           {isLoading ? "Signing In..." : "Sign in"}
+                            {isLoading ? "Signing In..." : "Sign in"}
                         </button>
                     </div>
                 </form>

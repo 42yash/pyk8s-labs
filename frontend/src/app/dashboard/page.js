@@ -5,28 +5,45 @@ import { useCreateClusterMutation, useDeleteClusterMutation, useGetClustersQuery
 import { useState } from "react";
 
 export default function Dashboard() {
-    // Use RTK Query hooks to fetch data
-    const { data: clusters, error, isLoading, isFetching } = useGetClustersQuery(undefined, {
-        pollingInterval: 15000 // Re-fetch every 15 seconds
-    });
+    // --- THIS IS THE ONLY CHANGE IN THIS FILE ---
+    // The pollingInterval is removed, WebSocket will handle updates.
+    const { data: clusters, error, isLoading, isFetching } = useGetClustersQuery();
+    // --- END OF CHANGE ---
 
     const [createCluster, { isLoading: isCreating }] = useCreateClusterMutation();
     const [deleteCluster, { isLoading: isDeleting }] = useDeleteClusterMutation();
     const [clusterName, setClusterName] = useState("");
     const [apiError, setApiError] = useState("");
 
+    const [successMessage, setSuccessMessage] = useState("");
+
     const handleCreateCluster = async (e) => {
         e.preventDefault();
         if (!clusterName || isCreating) return;
         setApiError("");
+        setSuccessMessage("");
+
         try {
-            await createCluster({ name: clusterName, ttl_hours: 1 }).unwrap();
-            setClusterName(""); // Clear input on success
+            // Await the mutation without unwrap() to avoid throwing on 202
+            const response = await createCluster({ name: clusterName, ttl_hours: 1 });
+
+            // Check if there's an error in the response
+            if (response.error) {
+                throw response.error;  // Will go to catch block
+            }
+
+            // If no error, it's successful (includes 202 status)
+            setClusterName("");
+            setSuccessMessage(`Cluster "${clusterName}" is being provisioned. You'll see status updates below.`);
+            setTimeout(() => setSuccessMessage(""), 5000);
         } catch (err) {
-            setApiError(err.data?.detail || "Failed to create cluster.");
+            console.error("Cluster creation error:", err);  // Log for debugging
+            setApiError(err.data?.detail || "Failed to create cluster. Please try again.");
         }
     };
-    
+
+
+
     const handleDeleteCluster = async (clusterId) => {
         if (isDeleting) return;
         try {
@@ -45,7 +62,7 @@ export default function Dashboard() {
         };
         return <span className={`px-2 inline-flex text-xs leading-5 font-semibold rounded-full ${styles[status] || 'bg-gray-100 text-gray-800'}`}>{status}</span>;
     };
-    
+
     return (
         <DashboardLayout>
             <div className="space-y-8">
@@ -69,7 +86,9 @@ export default function Dashboard() {
                             {isCreating ? "Provisioning..." : "Create Cluster"}
                         </button>
                     </form>
+                    {successMessage && <p className="text-green-500 mt-2">{successMessage}</p>}
                     {apiError && <p className="text-red-500 mt-2">{apiError}</p>}
+
                 </div>
 
                 {/* Cluster List */}
@@ -77,7 +96,7 @@ export default function Dashboard() {
                     <h2 className="text-xl font-bold mb-4">Your Clusters</h2>
                     {(isLoading || isFetching) && <p>Loading clusters...</p>}
                     {error && <p className="text-red-500">Error fetching clusters: {error.toString()}</p>}
-                    
+
                     {!isLoading && !error && (
                         <div className="bg-white dark:bg-gray-800 rounded-lg shadow overflow-hidden">
                             <ul className="divide-y divide-gray-200 dark:divide-gray-700">

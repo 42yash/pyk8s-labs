@@ -4,9 +4,8 @@ import { createApi, fetchBaseQuery } from "@reduxjs/toolkit/query/react";
 export const apiSlice = createApi({
     reducerPath: "api",
     baseQuery: fetchBaseQuery({
-        baseUrl: "http://localhost:8000/api/v1", // URL of our FastAPI backend
+        baseUrl: "http://localhost:8000/api/v1",
         prepareHeaders: (headers, { getState }) => {
-            // We will add logic here later to get the token from the state
             const token = getState().auth?.token;
             if (token) {
                 headers.set("authorization", `Bearer ${token}`);
@@ -14,9 +13,8 @@ export const apiSlice = createApi({
             return headers;
         },
     }),
-    tagTypes: ["Cluster"], // Used for automatic re-fetching
+    tagTypes: ["Cluster"],
     endpoints: (builder) => ({
-        // --- AUTH ENDPOINTS ---
         register: builder.mutation({
             query: (credentials) => ({
                 url: "/users/register",
@@ -26,7 +24,6 @@ export const apiSlice = createApi({
         }),
         login: builder.mutation({
             query: (credentials) => {
-                // RTK Query needs the form data in the body for this type of request
                 const formData = new URLSearchParams();
                 formData.append("username", credentials.email);
                 formData.append("password", credentials.password);
@@ -40,10 +37,88 @@ export const apiSlice = createApi({
                 };
             },
         }),
-        // --- CLUSTER ENDPOINTS ---
         getClusters: builder.query({
             query: () => "/clusters",
-            providesTags: ["Cluster"], // Provides the 'Cluster' tag for caching
+            providesTags: ["Cluster"],
+            async onCacheEntryAdded(
+                arg,
+                { updateCachedData, cacheDataLoaded, cacheEntryRemoved, getState }
+            ) {
+                const token = getState().auth.token;
+                if (!token) return;
+
+                let ws;
+                let reconnectAttempts = 0;
+                const maxReconnectAttempts = 5;
+
+                const connectWebSocket = () => {
+                    ws = new WebSocket(`ws://localhost:8000/api/v1/ws?token=${token}`);
+
+                    ws.onopen = () => {
+                        console.log("WebSocket connected");
+                        reconnectAttempts = 0;
+                    };
+
+                    ws.onmessage = (event) => {
+                        const data = JSON.parse(event.data);
+                        console.log("WebSocket message received:", data);
+
+                        updateCachedData((draft) => {
+                            if (data.status === "DELETED") {
+                                return draft.filter(c => c.id !== data.cluster_id);
+                            }
+                            const cluster = draft.find(c => c.id === data.cluster_id);
+                            if (cluster) {
+                                cluster.status = data.status;
+                            }
+                        });
+                    };
+
+                    ws.onerror = (error) => {
+                        console.error('WebSocket error occurred:', {
+                            readyState: ws.readyState,
+                            url: ws.url,
+                            timestamp: new Date().toISOString()
+                        });
+                    };
+
+                    ws.onclose = (event) => {
+                        console.log('WebSocket closed:', {
+                            code: event.code,
+                            reason: event.reason,
+                            wasClean: event.wasClean,
+                            timestamp: new Date().toISOString()
+                        });
+
+                        // Add reconnection logic here if needed
+                    };
+
+
+                    ws.onclose = (event) => {
+                        console.log("WebSocket disconnected", event);
+
+                        // Attempt to reconnect if not a normal closure
+                        if (event.code !== 1000 && reconnectAttempts < maxReconnectAttempts) {
+                            reconnectAttempts++;
+                            console.log(`Attempting to reconnect WebSocket (${reconnectAttempts}/${maxReconnectAttempts})`);
+                            setTimeout(connectWebSocket, 2000 * reconnectAttempts);
+                        }
+                    };
+                };
+
+                try {
+                    await cacheDataLoaded;
+                    connectWebSocket();
+                } catch (error) {
+                    console.error("Cache loading failed:", error);
+                }
+
+                await cacheEntryRemoved;
+                if (ws) {
+                    ws.close(1000, "Component unmounted");
+                }
+            }
+            ,
         }),
         createCluster: builder.mutation({
             query: (clusterConfig) => ({
@@ -51,19 +126,21 @@ export const apiSlice = createApi({
                 method: "POST",
                 body: clusterConfig,
             }),
-            invalidatesTags: ["Cluster"], // Invalidates 'Cluster' tag, forcing a re-fetch
+            // By invalidating the general 'Cluster' tag, we tell RTK Query to refetch the list.
+            // This is simpler and more reliable than optimistic updates for this case.
+            invalidatesTags: ["Cluster"],
         }),
         deleteCluster: builder.mutation({
             query: (clusterId) => ({
                 url: `/clusters/${clusterId}`,
                 method: "DELETE",
             }),
-            invalidatesTags: ["Cluster"], // Invalidates 'Cluster' tag, forcing a re-fetch
+            // We keep this invalidation as a fallback, but the WebSocket should handle the primary update.
+            invalidatesTags: ["Cluster"],
         }),
     }),
 });
 
-// Export auto-generated hooks for use in components
 export const {
     useRegisterMutation,
     useLoginMutation,

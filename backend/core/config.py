@@ -13,6 +13,10 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30 # Tokens will be valid for 30 minutes
 
     ENCRYPTION_KEY: str = "PbY-1_8HuIT8HyufhjJggOq_nj2FAY3dqlp7g8GWj88="
+    
+    # Redis Settings
+    REDIS_HOST: str = "localhost"
+    REDIS_PORT: int = 6379
 
 
 settings = Settings()

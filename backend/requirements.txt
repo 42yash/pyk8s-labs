@@ -12,3 +12,5 @@ pydantic[email]
 python-multipart
 cryptography
 apscheduler
+redis
+websockets

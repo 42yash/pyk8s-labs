@@ -10,7 +10,7 @@ ARG DOCKER_GID=999
 # Install essential dependencies
 RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*
 
-# --- FINAL CORRECTED USER/GROUP SETUP ---
+# --- START: CORRECTED USER SETUP ---
 # Add build arguments for UID and GID
 ARG UID=1000
 ARG GID=1000
@@ -18,16 +18,19 @@ ARG GID=1000
 # Create a system group 'docker' with the specified GID from the host.
 RUN addgroup --system --gid ${DOCKER_GID} docker
 
-# Create a non-root system user 'app' with the specified UID from the host
-# AND its corresponding group 'app'. This ensures it matches the host user.
-RUN adduser --system --no-create-home --uid ${UID} --group app
+# Create a non-root system user 'app' and its home directory at /home/app.
+# The invalid '--create-home' flag has been removed.
+RUN adduser --system --home /home/app --uid ${UID} --group app
 
 # Add the 'app' user to the 'docker' group.
 RUN adduser app docker
-# --- END USER/GROUP SETUP ---
 
-# --- CORRECTED ARCHITECTURE-AWARE KinD INSTALL ---
-# Use TARGETARCH to download the correct binary for the build architecture (amd64 vs arm64)
+# Set the HOME environment variable for the 'app' user.
+ENV HOME=/home/app
+# --- END: CORRECTED USER SETUP ---
+
+
+# --- ARCHITECTURE-AWARE KinD INSTALL ---
 ARG TARGETARCH
 RUN case ${TARGETARCH} in \
          "amd64") ARCH="amd64" ;; \
@@ -40,7 +43,7 @@ RUN chmod +x ./kind
 RUN mv ./kind /usr/local/bin/kind
 # --- END KinD INSTALL ---
 
-# Install Docker Client (This is already architecture-aware)
+# Install Docker Client
 RUN curl -L https://download.docker.com/linux/static/stable/x86_64/docker-20.10.9.tgz | tar -xz
 RUN mv docker/docker /usr/local/bin/docker
 RUN rm -rf docker

@@ -15,9 +15,13 @@ services:
       - DATABASE_URL=postgresql://user:password@db:5432/pyk8s_db
       - SECRET_KEY=d76ed749832ebf841cb682c2c490386305ec6a0fb1e8bac515c8c8e32098d2b4
       - ENCRYPTION_KEY=PbY-1_8HuIT8HyufhjJggOq_nj2FAY3dqlp7g8GWj88=
-      - KUBECONFIG=/app/kubeconfig
+      # --- THIS LINE HAS BEEN REMOVED ---
+      # - KUBECONFIG=/app/kubeconfig
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
     depends_on:
       - db
+      - redis
     networks:
       - app-network
 
@@ -41,6 +45,13 @@ services:
       - POSTGRES_DB=pyk8s_db
     ports:
       - "5432:5432"
+    networks:
+      - app-network
+  
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
     networks:
       - app-network
 

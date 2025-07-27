@@ -1,22 +1,24 @@
 # backend/main.py
+import asyncio
 from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware # Import the middleware
+from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from core.config import settings
-from api import router as api_router, run_cluster_deletion
+from api import router as api_router, run_cluster_deletion # Import the async task
 import crud
 from db import SessionLocal
+from websocket_manager import manager, redis_listener
+import logging
 
-# --- Add this origins list ---
 origins = [
     "http://localhost:3000",
-    # You can add other origins here, like your production frontend URL
+    "http://0.0.0.0:3000",
+    "http://127.0.0.1:3000",
 ]
-# -----------------------------
 
-def check_expired_clusters():
+async def check_expired_clusters():
     """Scheduled job to find and delete expired clusters."""
     print("Running TTL cleanup job...")
     db = SessionLocal()
@@ -28,15 +30,16 @@ def check_expired_clusters():
 
         for cluster in expired_clusters:
             print(f"Found expired cluster: {cluster.name} (ID: {cluster.id})")
-            # Update status to DELETING to prevent race conditions
             cluster.status = "DELETING"
             db.commit()
-            # Run deletion in the background
-            run_cluster_deletion(cluster.name, cluster.id, db)
+            
+            # Call the async task directly, without passing the db session
+            asyncio.create_task(
+                run_cluster_deletion(cluster.name, str(cluster.id), str(cluster.user_id))
+            )
     finally:
         db.close()
 
-# Use the new lifespan context manager for startup/shutdown events
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # On startup
@@ -44,24 +47,40 @@ async def lifespan(app: FastAPI):
     scheduler.add_job(check_expired_clusters, 'interval', minutes=5)
     scheduler.start()
     print("Scheduler started...")
+
+    redis_task = asyncio.create_task(redis_listener(manager))
+    
     yield
+    
     # On shutdown
+    print("Shutting down...")
+    redis_task.cancel()
     scheduler.shutdown()
-    print("Scheduler shut down.")
+    try:
+        await redis_task
+    except asyncio.CancelledError:
+        print("Redis listener task was cancelled successfully.")
+    print("Scheduler and Redis listener shut down.")
 
 app = FastAPI(title=settings.PROJECT_NAME, lifespan=lifespan)
 
-# --- Add the CORS middleware to the app ---
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
     allow_credentials=True,
-    allow_methods=["*"], # Allow all methods
-    allow_headers=["*"], # Allow all headers
+    allow_methods=["*"],
+    allow_headers=["*"],
+    expose_headers=["*"],
 )
-# ----------------------------------------
 
 app.include_router(api_router, prefix="/api/v1")
+
+@app.middleware("http")
+async def log_requests(request, call_next):
+    logging.info(f"Request: {request.method} {request.url} from origin {request.headers.get('origin')}")
+    response = await call_next(request)
+    logging.info(f"Response status: {response.status_code}")
+    return response
 
 @app.get("/")
 def read_root():
