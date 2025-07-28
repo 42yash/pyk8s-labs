@@ -32,3 +32,19 @@ class Cluster(ClusterBase):
 
     class Config:
         from_attributes = True
+
+
+class CommandPayload(BaseModel):
+    """Schema for the command execution request payload."""
+
+    command: str = Field(
+        ..., description="The shell command to execute inside the cluster's container."
+    )
+
+
+class CommandOutput(BaseModel):
+    """Schema for the command execution response."""
+
+    output: str
+    error: str
+    exit_code: int

@@ -1,23 +1,23 @@
 import json
 import asyncio
+import docker
 from fastapi import (
     APIRouter,
     Depends,
     HTTPException,
     status,
     BackgroundTasks,
-    WebSocket,
-    WebSocketDisconnect,
     Response,
 )
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 import crud
-import schemas
-from db import get_db, SessionLocal
-from core.security import create_access_token, verify_password, get_current_user
-import provisioner
 import models
+import schemas
+from core.config import settings
+from core.security import create_access_token, verify_password, get_current_user
+from db import get_db, SessionLocal
+import provisioner
 from redis_client import get_redis_connection
 from websocket_manager import REDIS_CHANNEL
 
@@ -161,10 +161,6 @@ async def list_clusters(
     db: Session = Depends(get_db),
     current_user: models.user.User = Depends(get_current_user),
 ):
-    """
-    Asynchronously lists all clusters owned by the current user.
-    The synchronous DB call is run in a separate thread to avoid blocking.
-    """
     return await asyncio.to_thread(crud.get_clusters_by_user, db, current_user.id)
 
 
@@ -174,7 +170,6 @@ def get_cluster_kubeconfig(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user),
 ):
-    """Retrieves the decrypted kubeconfig for a specific cluster."""
     db_cluster = crud.get_cluster(db, cluster_id=cluster_id)
 
     if not db_cluster or db_cluster.user_id != current_user.id:
@@ -230,28 +225,75 @@ async def delete_cluster(
     return {"message": "Cluster deletion scheduled."}
 
 
+@router.post(
+    "/clusters/{cluster_id}/exec", response_model=schemas.cluster.CommandOutput
+)
+def execute_command_in_cluster(
+    cluster_id: str,
+    payload: schemas.cluster.CommandPayload,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    """Executes a non-interactive command inside a running cluster."""
+    db_cluster = crud.get_cluster(db, cluster_id=cluster_id)
+
+    # Validate ownership and status
+    if not db_cluster or db_cluster.user_id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Cluster not found"
+        )
+    if db_cluster.status != "RUNNING":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Cannot execute commands on a cluster in '{db_cluster.status}' state.",
+        )
+
+    try:
+        docker_client = docker.from_env()
+        container_name = f"{db_cluster.name}-control-plane"
+        container = docker_client.containers.get(container_name)
+
+        command_as_list = payload.command.split()
+
+        # --- FIX: Correctly unpack the return value and handle output ---
+        # exec_run returns a tuple: (exit_code, output_bytes)
+        exit_code, output_bytes = container.exec_run(cmd=command_as_list)
+
+        decoded_output = output_bytes.decode("utf-8", errors="ignore")
+
+        # Convention: if exit code is non-zero, the output is an error message.
+        if exit_code == 0:
+            stdout = decoded_output
+            stderr = ""
+        else:
+            stdout = ""
+            stderr = decoded_output
+        # --- END FIX ---
+
+        return {
+            "output": stdout,
+            "error": stderr,
+            "exit_code": exit_code,
+        }
+    except docker.errors.NotFound:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Container for cluster '{db_cluster.name}' not found.",
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"An unexpected error occurred: {str(e)}",
+        )
+
+
+# --- TEAM & INVITATION PLACEHOLDERS ---
 @router.post("/teams", response_model=dict)
 def create_team(
     team_data: dict,
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user),
 ):
-    # Implementation for creating teams
-    # This is a placeholder - you'll need to implement the full team functionality
-    return {"message": "Team endpoints not yet implemented"}
-
-
-# Add these endpoints to backend/api.py
-
-
-# --- TEAM ENDPOINTS ---
-@router.post("/teams", response_model=dict)
-def create_team(
-    team_data: dict,
-    db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user),
-):
-    # Placeholder implementation
     return {"message": "Team endpoints not yet implemented"}
 
 
@@ -260,17 +302,14 @@ def get_teams(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user),
 ):
-    # Return empty list for now to prevent 404
     return []
 
 
-# --- INVITATION ENDPOINTS ---
 @router.get("/invitations/pending")
 def get_pending_invitations(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user),
 ):
-    # Return empty list for now to prevent 404
     return []
 
 

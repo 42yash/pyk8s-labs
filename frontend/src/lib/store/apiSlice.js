@@ -30,19 +30,18 @@ export const apiSlice = createApi({
         // CLUSTERS
         getClusters: builder.query({
             query: () => "/clusters",
-            providesTags: ["Cluster"],
+            providesTags: (result) => result ? [...result.map(({ id }) => ({ type: 'Cluster', id })), { type: 'Cluster', id: 'LIST' }] : [{ type: 'Cluster', id: 'LIST' }],
             async onCacheEntryAdded(arg, { updateCachedData, cacheDataLoaded, cacheEntryRemoved, getState }) {
                 const token = getState().auth.token;
                 if (!token) return;
 
-                const ws = new WebSocket(`ws://localhost:8000/api/v1/ws?token=${token}`);
+                const eventSource = new EventSource(`http://localhost:8000/api/v1/events?token=${token}`);
 
-                ws.onmessage = (event) => {
+                eventSource.onmessage = (event) => {
+                    if (event.data.startsWith(':')) return;
                     const message = JSON.parse(event.data);
-
-                    // Handle messages from the new unified WebSocket
-                    if (message.type === "cluster_status_update") {
-                        const data = message.payload;
+                    if (message.status) {
+                        const data = message;
                         updateCachedData((draft) => {
                             if (data.status === "DELETED") {
                                 return draft.filter(c => c.id !== data.cluster_id);
@@ -55,17 +54,28 @@ export const apiSlice = createApi({
                     }
                 };
 
+                eventSource.onerror = (err) => {
+                    console.error("EventSource failed:", err);
+                    eventSource.close();
+                };
+
                 await cacheEntryRemoved;
-                ws.close();
+                eventSource.close();
             },
         }),
         createCluster: builder.mutation({
             query: (config) => ({ url: "/clusters", method: "POST", body: config }),
-            invalidatesTags: ["Cluster"],
+            invalidatesTags: [{ type: 'Cluster', id: 'LIST' }],
         }),
         deleteCluster: builder.mutation({
             query: (id) => ({ url: `/clusters/${id}`, method: "DELETE" }),
-            invalidatesTags: ["Cluster"],
+        }),
+        executeClusterCommand: builder.mutation({
+            query: ({ clusterId, command }) => ({
+                url: `/clusters/${clusterId}/exec`,
+                method: 'POST',
+                body: { command },
+            }),
         }),
         // TEAMS
         getTeams: builder.query({
@@ -106,8 +116,9 @@ export const apiSlice = createApi({
 
 export const {
     useRegisterMutation, useLoginMutation, useGetClustersQuery,
-    useCreateClusterMutation, useDeleteClusterMutation, useGetTeamsQuery,
-    useCreateTeamMutation, useGetTeamDetailsQuery, useInviteMemberMutation,
-    useGetPendingInvitationsForUserQuery, useGetPendingInvitationsForTeamQuery,
-    useAcceptInvitationMutation, useRejectInvitationMutation,
+    useCreateClusterMutation, useDeleteClusterMutation, useExecuteClusterCommandMutation,
+    useGetTeamsQuery, useCreateTeamMutation, useGetTeamDetailsQuery,
+    useInviteMemberMutation, useGetPendingInvitationsForUserQuery,
+    useGetPendingInvitationsForTeamQuery, useAcceptInvitationMutation,
+    useRejectInvitationMutation,
 } = apiSlice;
