@@ -2,10 +2,12 @@
 from typing import Optional
 from pydantic import BaseModel, EmailStr, UUID4
 
+
 # Properties to receive via API on user creation
 class UserCreate(BaseModel):
     email: EmailStr
     password: str
+
 
 # Properties to return via API, hiding the password
 class User(BaseModel):

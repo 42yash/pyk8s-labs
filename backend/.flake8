@@ -1,0 +1,9 @@
+[flake8]
+# Set the maximum line length to 88, which is the standard for the 'black' formatter.
+max-line-length = 88
+
+# Extend the default ignore list.
+# E203: Whitespace before ':' - conflicts with black's formatting style.
+# E501: Line too long - 'black' will handle line length automatically.
+# W503: Line break before binary operator - also conflicts with black.
+extend-ignore = E203, E501, W503
