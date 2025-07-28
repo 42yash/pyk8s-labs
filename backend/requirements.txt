@@ -16,3 +16,5 @@ redis
 PyJWT
 docker
 sse-starlette
+pytest
+httpx
