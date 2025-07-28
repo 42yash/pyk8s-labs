@@ -13,56 +13,36 @@ export const apiSlice = createApi({
             return headers;
         },
     }),
-    tagTypes: ["Cluster"],
+    tagTypes: ["Cluster", "Team", "Invitation"],
     endpoints: (builder) => ({
+        // AUTH
         register: builder.mutation({
-            query: (credentials) => ({
-                url: "/users/register",
-                method: "POST",
-                body: credentials,
-            }),
+            query: (credentials) => ({ url: "/users/register", method: "POST", body: credentials }),
         }),
         login: builder.mutation({
             query: (credentials) => {
                 const formData = new URLSearchParams();
                 formData.append("username", credentials.email);
                 formData.append("password", credentials.password);
-                return {
-                    url: "/auth/token",
-                    method: "POST",
-                    body: formData,
-                    headers: {
-                        "Content-Type": "application/x-www-form-urlencoded",
-                    },
-                };
+                return { url: "/auth/token", method: "POST", body: formData, headers: { "Content-Type": "application/x-www-form-urlencoded" } };
             },
         }),
+        // CLUSTERS
         getClusters: builder.query({
             query: () => "/clusters",
             providesTags: ["Cluster"],
-            async onCacheEntryAdded(
-                arg,
-                { updateCachedData, cacheDataLoaded, cacheEntryRemoved, getState }
-            ) {
+            async onCacheEntryAdded(arg, { updateCachedData, cacheDataLoaded, cacheEntryRemoved, getState }) {
                 const token = getState().auth.token;
                 if (!token) return;
 
-                let ws;
-                let reconnectAttempts = 0;
-                const maxReconnectAttempts = 5;
+                const ws = new WebSocket(`ws://localhost:8000/api/v1/ws?token=${token}`);
 
-                const connectWebSocket = () => {
-                    ws = new WebSocket(`ws://localhost:8000/api/v1/ws?token=${token}`);
+                ws.onmessage = (event) => {
+                    const message = JSON.parse(event.data);
 
-                    ws.onopen = () => {
-                        console.log("WebSocket connected");
-                        reconnectAttempts = 0;
-                    };
-
-                    ws.onmessage = (event) => {
-                        const data = JSON.parse(event.data);
-                        console.log("WebSocket message received:", data);
-
+                    // Handle messages from the new unified WebSocket
+                    if (message.type === "cluster_status_update") {
+                        const data = message.payload;
                         updateCachedData((draft) => {
                             if (data.status === "DELETED") {
                                 return draft.filter(c => c.id !== data.cluster_id);
@@ -72,76 +52,62 @@ export const apiSlice = createApi({
                                 cluster.status = data.status;
                             }
                         });
-                    };
-
-                    ws.onerror = (error) => {
-                        console.error('WebSocket error occurred:', {
-                            readyState: ws.readyState,
-                            url: ws.url,
-                            timestamp: new Date().toISOString()
-                        });
-                    };
-
-                    // --- CORRECTED SECTION ---
-                    // The two onclose handlers have been merged into one.
-                    ws.onclose = (event) => {
-                        console.log('WebSocket closed:', {
-                            code: event.code,
-                            reason: event.reason,
-                            wasClean: event.wasClean,
-                            timestamp: new Date().toISOString()
-                        });
-
-                        // Attempt to reconnect if not a normal closure (code 1000)
-                        if (event.code !== 1000 && reconnectAttempts < maxReconnectAttempts) {
-                            reconnectAttempts++;
-                            console.log(`Attempting to reconnect WebSocket (${reconnectAttempts}/${maxReconnectAttempts})`);
-                            // Exponential backoff for reconnection attempts
-                            setTimeout(connectWebSocket, 2000 * reconnectAttempts);
-                        }
-                    };
-                    // --- END CORRECTED SECTION ---
+                    }
                 };
 
-                try {
-                    await cacheDataLoaded;
-                    connectWebSocket();
-                } catch (error) {
-                    console.error("Cache loading failed:", error);
-                }
-
                 await cacheEntryRemoved;
-                if (ws) {
-                    ws.close(1000, "Component unmounted");
-                }
-            }
-            ,
+                ws.close();
+            },
         }),
         createCluster: builder.mutation({
-            query: (clusterConfig) => ({
-                url: "/clusters",
-                method: "POST",
-                body: clusterConfig,
-            }),
-            // By invalidating the general 'Cluster' tag, we tell RTK Query to refetch the list.
-            // This is simpler and more reliable than optimistic updates for this case.
+            query: (config) => ({ url: "/clusters", method: "POST", body: config }),
             invalidatesTags: ["Cluster"],
         }),
         deleteCluster: builder.mutation({
-            query: (clusterId) => ({
-                url: `/clusters/${clusterId}`,
-                method: "DELETE",
-            }),
-            // We keep this invalidation as a fallback, but the WebSocket should handle the primary update.
+            query: (id) => ({ url: `/clusters/${id}`, method: "DELETE" }),
             invalidatesTags: ["Cluster"],
+        }),
+        // TEAMS
+        getTeams: builder.query({
+            query: () => '/teams',
+            providesTags: (result) => result ? [...result.map(({ id }) => ({ type: 'Team', id })), { type: 'Team', id: 'LIST' }] : [{ type: 'Team', id: 'LIST' }],
+        }),
+        createTeam: builder.mutation({
+            query: (team) => ({ url: '/teams', method: 'POST', body: team }),
+            invalidatesTags: [{ type: 'Team', id: 'LIST' }],
+        }),
+        getTeamDetails: builder.query({
+            query: (id) => `/teams/${id}`,
+            providesTags: (result, error, id) => [{ type: 'Team', id }],
+        }),
+        inviteMember: builder.mutation({
+            query: ({ teamId, inviteData }) => ({ url: `/teams/${teamId}/members`, method: 'POST', body: inviteData }),
+            invalidatesTags: (result, error, { teamId }) => [{ type: 'Invitation', id: `TEAM-${teamId}` }],
+        }),
+        // INVITATIONS
+        getPendingInvitationsForUser: builder.query({
+            query: () => '/invitations/pending',
+            providesTags: (result) => result ? [...result.map(({ id }) => ({ type: 'Invitation', id })), { type: 'Invitation', id: 'LIST' }] : [{ type: 'Invitation', id: 'LIST' }],
+        }),
+        getPendingInvitationsForTeam: builder.query({
+            query: (teamId) => `/teams/${teamId}/invitations`,
+            providesTags: (result, error, teamId) => [{ type: 'Invitation', id: `TEAM-${teamId}` }],
+        }),
+        acceptInvitation: builder.mutation({
+            query: (token) => ({ url: `/invitations/${token}/accept`, method: 'POST' }),
+            invalidatesTags: [{ type: 'Team', id: 'LIST' }, { type: 'Invitation', id: 'LIST' }],
+        }),
+        rejectInvitation: builder.mutation({
+            query: (token) => ({ url: `/invitations/${token}/reject`, method: 'POST' }),
+            invalidatesTags: [{ type: 'Invitation', id: 'LIST' }],
         }),
     }),
 });
 
 export const {
-    useRegisterMutation,
-    useLoginMutation,
-    useGetClustersQuery,
-    useCreateClusterMutation,
-    useDeleteClusterMutation,
+    useRegisterMutation, useLoginMutation, useGetClustersQuery,
+    useCreateClusterMutation, useDeleteClusterMutation, useGetTeamsQuery,
+    useCreateTeamMutation, useGetTeamDetailsQuery, useInviteMemberMutation,
+    useGetPendingInvitationsForUserQuery, useGetPendingInvitationsForTeamQuery,
+    useAcceptInvitationMutation, useRejectInvitationMutation,
 } = apiSlice;

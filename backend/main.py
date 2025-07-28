@@ -1,66 +1,92 @@
 # backend/main.py
 import asyncio
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
+import json
 from contextlib import asynccontextmanager
+
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from fastapi import Depends, FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy.orm import Session
 
-from core.config import settings
-from api import router as api_router, run_cluster_deletion # Import the async task
 import crud
-from db import SessionLocal
-from websocket_manager import manager, redis_listener
-import logging
+from api import router as api_router, run_cluster_deletion
+from core.config import settings
+from db import SessionLocal, get_db
+from redis_client import get_redis_connection
+from websocket_manager import (
+    REDIS_CHANNEL,
+    ConnectionManager,
+    get_current_user_from_token,
+    manager,
+)
 
-origins = [
-    "http://localhost:3000",
-    "http://0.0.0.0:3000",
-    "http://127.0.0.1:3000",
-]
+origins = ["http://localhost:3000", "http://0.0.0.0:3000", "http://127.0.0.1:3000"]
+
 
 async def check_expired_clusters():
-    """Scheduled job to find and delete expired clusters."""
-    print("Running TTL cleanup job...")
     db = SessionLocal()
     try:
         expired_clusters = crud.get_expired_clusters(db)
-        if not expired_clusters:
-            print("No expired clusters found.")
-            return
-
         for cluster in expired_clusters:
-            print(f"Found expired cluster: {cluster.name} (ID: {cluster.id})")
-            cluster.status = "DELETING"
-            db.commit()
-            
-            # Call the async task directly, without passing the db session
-            asyncio.create_task(
-                run_cluster_deletion(cluster.name, str(cluster.id), str(cluster.user_id))
-            )
+            if cluster.status not in ["DELETING", "PROVISIONING"]:
+                print(
+                    f"Scheduling expired cluster for deletion: {cluster.name} ({cluster.id})"
+                )
+                cluster.status = "DELETING"
+                db.commit()
+                asyncio.create_task(
+                    run_cluster_deletion(
+                        str(cluster.id),
+                        cluster.name,
+                        str(cluster.user_id),
+                        cluster.provider,
+                    )
+                )
     finally:
         db.close()
 
+
+async def redis_listener(manager: ConnectionManager):
+    redis_conn = get_redis_connection()
+    pubsub = redis_conn.pubsub()
+    await pubsub.subscribe(REDIS_CHANNEL)
+    print("Subscribed to Redis channel and listening for messages...")
+    try:
+        while True:
+            message = await pubsub.get_message(
+                ignore_subscribe_messages=True, timeout=1.0
+            )
+            if message and message["type"] == "message":
+                try:
+                    data = json.loads(message["data"])
+                    user_id = data.get("user_id")
+                    if user_id:
+                        await manager.broadcast_to_user(
+                            str(user_id),
+                            {"type": "cluster_status_update", "payload": data},
+                        )
+                except (json.JSONDecodeError, KeyError) as e:
+                    print(f"Could not process Redis message: {e}")
+    except Exception as e:
+        print(f"Redis listener error: {e}")
+    finally:
+        await pubsub.close()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # On startup
     scheduler = AsyncIOScheduler()
-    scheduler.add_job(check_expired_clusters, 'interval', minutes=5)
+    scheduler.add_job(check_expired_clusters, "interval", minutes=5)
     scheduler.start()
-    print("Scheduler started...")
-
     redis_task = asyncio.create_task(redis_listener(manager))
-    
     yield
-    
-    # On shutdown
-    print("Shutting down...")
-    redis_task.cancel()
     scheduler.shutdown()
+    redis_task.cancel()
     try:
         await redis_task
     except asyncio.CancelledError:
-        print("Redis listener task was cancelled successfully.")
-    print("Scheduler and Redis listener shut down.")
+        pass
+
 
 app = FastAPI(title=settings.PROJECT_NAME, lifespan=lifespan)
 
@@ -70,17 +96,41 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
-    expose_headers=["*"],
 )
 
 app.include_router(api_router, prefix="/api/v1")
 
-@app.middleware("http")
-async def log_requests(request, call_next):
-    logging.info(f"Request: {request.method} {request.url} from origin {request.headers.get('origin')}")
-    response = await call_next(request)
-    logging.info(f"Response status: {response.status_code}")
-    return response
+
+@app.websocket("/api/v1/ws")
+async def websocket_endpoint(websocket: WebSocket, db: Session = Depends(get_db)):
+    token = websocket.query_params.get("token")
+    user = await get_current_user_from_token(token, db)
+    if not user:
+        await websocket.close(code=1008, reason="Invalid credentials.")
+        return
+
+    user_id = str(user.id)
+    await manager.connect(websocket, user_id)
+    try:
+        while True:
+            data = await websocket.receive_json()
+            msg_type = data.get("type")
+
+            if msg_type == "start_terminal":
+                cluster_id = data.get("cluster_id")
+                if cluster_id:
+                    await manager.handle_terminal_session(
+                        websocket, user_id, cluster_id, db
+                    )
+                    # Once the terminal session ends, break the loop to disconnect
+                    break
+
+    except WebSocketDisconnect:
+        manager.disconnect(websocket, user_id)
+    except Exception as e:
+        print(f"Error in WebSocket endpoint: {e}")
+        manager.disconnect(websocket, user_id)
+
 
 @app.get("/")
 def read_root():
